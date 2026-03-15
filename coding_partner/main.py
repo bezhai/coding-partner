@@ -3,6 +3,8 @@
 import asyncio
 import json
 import logging
+import re
+import shutil
 import signal
 
 import lark_oapi as lark
@@ -21,9 +23,12 @@ logger = logging.getLogger(__name__)
 # asyncio event loop reference for scheduling coroutines from sync callbacks
 _loop: asyncio.AbstractEventLoop | None = None
 
+# Pattern to strip @mention placeholders like @_user_1
+_MENTION_RE = re.compile(r"@_user_\d+\s*")
+
 
 def _extract_text(message: dict) -> str | None:
-    """Extract plain text from a message content JSON."""
+    """Extract plain text from a message content JSON, stripping @mentions."""
     msg_type = message.get("message_type", "")
     content_str = message.get("content", "{}")
 
@@ -32,7 +37,10 @@ def _extract_text(message: dict) -> str | None:
 
     try:
         content = json.loads(content_str)
-        return content.get("text", "").strip()
+        text = content.get("text", "").strip()
+        # Remove @_user_N placeholders
+        text = _MENTION_RE.sub("", text).strip()
+        return text if text else None
     except (json.JSONDecodeError, AttributeError):
         return None
 
@@ -83,16 +91,31 @@ def do_message_receive(event: P2ImMessageReceiveV1) -> None:
         logger.error("Event loop not set")
         return
 
+    # Dedup: schedule the async dedup check + dispatch
+    asyncio.run_coroutine_threadsafe(
+        _dispatch_message(message_id, user_open_id, text, chat_id, chat_type),
+        _loop,
+    )
+
+
+async def _dispatch_message(
+    message_id: str,
+    user_open_id: str,
+    text: str,
+    chat_id: str,
+    chat_type: str,
+) -> None:
+    """Check dedup then dispatch to the appropriate handler."""
+    # Dedup check
+    if await store.is_message_seen(message_id):
+        logger.info("Duplicate message %s, skipping", message_id)
+        return
+    await store.mark_message_seen(message_id)
+
     if chat_type == "p2p":
-        asyncio.run_coroutine_threadsafe(
-            dm.handle_dm_message(message_id, user_open_id, text, chat_id),
-            _loop,
-        )
+        await dm.handle_dm_message(message_id, user_open_id, text, chat_id)
     elif chat_type == "group":
-        asyncio.run_coroutine_threadsafe(
-            group.handle_group_message(message_id, user_open_id, text, chat_id),
-            _loop,
-        )
+        await group.handle_group_message(message_id, user_open_id, text, chat_id)
 
 
 def do_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerResponse | None:
@@ -142,6 +165,16 @@ async def _run_ws_client(ws_client: lark.ws.Client) -> None:
     await loop.run_in_executor(None, ws_client.start)
 
 
+async def _periodic_cleanup_seen() -> None:
+    """Periodically clean up old seen_messages entries."""
+    while True:
+        await asyncio.sleep(settings.cleanup_interval)
+        try:
+            await store.cleanup_seen_messages()
+        except Exception:
+            logger.exception("Cleanup seen_messages failed")
+
+
 async def main() -> None:
     global _loop
     _loop = asyncio.get_event_loop()
@@ -149,6 +182,15 @@ async def main() -> None:
     # Initialize DB
     await store.get_db()
     logger.info("Database initialized")
+
+    # Restore queue workers for chats with pending messages
+    pending_chats = await store.get_chats_with_pending_messages()
+    for chat_id in pending_chats:
+        logger.info("Restoring queue worker for chat %s", chat_id)
+        group.ensure_worker(chat_id)
+
+    # Start periodic cleanup task
+    asyncio.create_task(_periodic_cleanup_seen())
 
     # Build event handler and WebSocket client
     event_handler = build_event_handler()
@@ -182,6 +224,24 @@ async def main() -> None:
     logger.info("Shutdown complete")
 
 
+def _check_dependencies() -> None:
+    """Verify required external tools are available before starting."""
+    missing = []
+    for cmd, purpose in [
+        (settings.claude_cli, "Claude Code CLI"),
+        ("git", "Git version control"),
+        ("script", "PTY allocation for streaming"),
+    ]:
+        if not shutil.which(cmd):
+            missing.append(f"  - {cmd} ({purpose})")
+    if missing:
+        raise SystemExit(
+            "Missing required dependencies:\n"
+            + "\n".join(missing)
+            + "\nPlease install them and try again."
+        )
+
+
 def run() -> None:
     """Entry point for the application."""
     logging.basicConfig(
@@ -189,6 +249,7 @@ def run() -> None:
         format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
+    _check_dependencies()
     asyncio.run(main())
 
 

@@ -118,7 +118,7 @@ wheels = [
 [[package]]
 name = "coding-partner"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
     { name = "lark-oapi" },

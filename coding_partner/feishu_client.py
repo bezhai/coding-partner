@@ -9,6 +9,8 @@ import lark_oapi as lark
 from lark_oapi.api.im.v1 import (
     CreateMessageRequest,
     CreateMessageRequestBody,
+    PatchMessageRequest,
+    PatchMessageRequestBody,
     ReplyMessageRequest,
     ReplyMessageRequestBody,
     UpdateChatRequest,
@@ -122,13 +124,11 @@ def reply_card(message_id: str, card: dict) -> None:
 def update_card(message_id: str, card: dict) -> None:
     """Update (patch) an existing card message."""
     client = get_client()
-    req = lark.RawRequest()
-    req.uri = f"/open-apis/im/v1/messages/{message_id}"
-    req.http_method = "PATCH"
-    req.body = {"content": json.dumps(card)}
-    resp = client.request(req)
+    body = PatchMessageRequestBody.builder().content(json.dumps(card)).build()
+    req = PatchMessageRequest.builder().message_id(message_id).request_body(body).build()
+    resp = client.im.v1.message.patch(req)
 
-    if resp.code != 0:
+    if not resp.success():
         logger.error("update_card failed: %s %s", resp.code, resp.msg)
 
 

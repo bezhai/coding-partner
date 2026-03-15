@@ -33,7 +33,7 @@ async def generate_branch_name(requirement: str) -> str:
             "-p",
             prompt,
             "--model",
-            "haiku",
+            settings.branch_name_model,
             "--output-format",
             "text",
             stdout=asyncio.subprocess.PIPE,

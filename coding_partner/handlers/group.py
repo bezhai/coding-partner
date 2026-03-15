@@ -75,7 +75,8 @@ async def handle_group_message(
     try:
         binding = await store.get_binding(chat_id)
         if not binding:
-            # Not a managed dev group, ignore
+            if text in ("/done", "/new", "/cancel"):
+                feishu_client.reply_text(message_id, "当前群未绑定开发环境")
             return
 
         if text == "/new":

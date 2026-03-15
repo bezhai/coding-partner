@@ -31,17 +31,20 @@ async def handle_group_message(
     """Handle a group chat text message."""
     text = text.strip()
 
-    binding = await store.get_binding(chat_id)
-    if not binding:
-        # Not a managed dev group, ignore
-        return
+    try:
+        binding = await store.get_binding(chat_id)
+        if not binding:
+            # Not a managed dev group, ignore
+            return
 
-    if text == "/new":
-        await _handle_new(message_id, chat_id, binding)
-    elif text == "/done":
-        await _handle_done(message_id, chat_id, binding)
-    else:
-        await _handle_claude_message(message_id, text, chat_id, binding)
+        if text == "/new":
+            await _handle_new(message_id, chat_id, binding)
+        elif text == "/done":
+            await _handle_done(message_id, chat_id, binding)
+        else:
+            await _handle_claude_message(message_id, text, chat_id, binding)
+    except Exception:
+        logger.exception("Group handler error")
 
 
 async def _handle_new(message_id: str, chat_id: str, binding: store.ChatBinding) -> None:
@@ -74,7 +77,8 @@ async def _handle_done(message_id: str, chat_id: str, binding: store.ChatBinding
 
     except Exception as e:
         logger.exception("Commit before done failed")
-        feishu_client.send_text(chat_id, f"提交失败: {e}")
+        feishu_client.send_text(chat_id, f"提交失败: {e}\n请手动处理后重新 /done")
+        return
 
     try:
         # Cleanup worktree
@@ -82,8 +86,13 @@ async def _handle_done(message_id: str, chat_id: str, binding: store.ChatBinding
     except Exception as e:
         logger.warning("Worktree cleanup failed: %s", e)
 
-    # Archive the group
-    feishu_client.archive_chat(chat_id)
+    # Delete the group
+    from coding_partner.services.group_manager import delete_group
+
+    try:
+        delete_group(chat_id)
+    except Exception as e:
+        logger.warning("Delete group failed: %s", e)
 
     # Clean up binding and lock
     await store.delete_binding(chat_id)

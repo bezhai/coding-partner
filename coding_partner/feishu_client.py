@@ -2,16 +2,17 @@
 
 import json
 import logging
+import threading
 import uuid
 
 import lark_oapi as lark
 from lark_oapi.api.im.v1 import (
     CreateMessageRequest,
     CreateMessageRequestBody,
-    PatchChatRequest,
-    PatchChatRequestBody,
     ReplyMessageRequest,
     ReplyMessageRequestBody,
+    UpdateChatRequest,
+    UpdateChatRequestBody,
 )
 
 from coding_partner.config import settings
@@ -19,19 +20,24 @@ from coding_partner.config import settings
 logger = logging.getLogger(__name__)
 
 _client: lark.Client | None = None
+_client_lock = threading.Lock()
 
 
 def get_client() -> lark.Client:
     global _client
     if _client is None:
-        log_level = lark.LogLevel.DEBUG if settings.log_level == "DEBUG" else lark.LogLevel.INFO
-        _client = (
-            lark.Client.builder()
-            .app_id(settings.feishu_app_id)
-            .app_secret(settings.feishu_app_secret)
-            .log_level(log_level)
-            .build()
-        )
+        with _client_lock:
+            if _client is None:
+                log_level = (
+                    lark.LogLevel.DEBUG if settings.log_level == "DEBUG" else lark.LogLevel.INFO
+                )
+                _client = (
+                    lark.Client.builder()
+                    .app_id(settings.feishu_app_id)
+                    .app_secret(settings.feishu_app_secret)
+                    .log_level(log_level)
+                    .build()
+                )
     return _client
 
 
@@ -129,9 +135,9 @@ def update_card(message_id: str, card: dict) -> None:
 def archive_chat(chat_id: str) -> None:
     """Archive (dissolve) a chat group."""
     client = get_client()
-    body = PatchChatRequestBody.builder().name("[已归档]").description("已完成").build()
-    req = PatchChatRequest.builder().chat_id(chat_id).request_body(body).build()
-    resp = client.im.v1.chat.patch(req)
+    body = UpdateChatRequestBody.builder().name("[已归档]").description("已完成").build()
+    req = UpdateChatRequest.builder().chat_id(chat_id).request_body(body).build()
+    resp = client.im.v1.chat.update(req)
 
     if not resp.success():
         logger.error("archive_chat failed: %s %s", resp.code, resp.msg)

@@ -7,7 +7,10 @@ import signal
 
 import lark_oapi as lark
 from lark_oapi.api.im.v1 import P2ImMessageReceiveV1
-from lark_oapi.event.callback.model import P2CardActionTrigger, P2CardActionTriggerResponse
+from lark_oapi.event.callback.model.p2_card_action_trigger import (
+    P2CardActionTrigger,
+    P2CardActionTriggerResponse,
+)
 
 from coding_partner import store
 from coding_partner.config import settings

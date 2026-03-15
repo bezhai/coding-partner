@@ -26,10 +26,13 @@ async def handle_dm_message(
     """Handle a private chat text message."""
     text = text.strip()
 
-    if text == "/repo":
-        await _handle_repo_command(message_id, user_open_id, chat_id)
-    else:
-        await _handle_requirement(message_id, user_open_id, text, chat_id)
+    try:
+        if text == "/repo":
+            await _handle_repo_command(message_id, user_open_id, chat_id)
+        else:
+            await _handle_requirement(message_id, user_open_id, text, chat_id)
+    except Exception:
+        logger.exception("DM handler error")
 
 
 async def _handle_repo_command(message_id: str, user_open_id: str, chat_id: str) -> None:
@@ -102,28 +105,32 @@ async def _handle_requirement(
 
 async def _run_first_claude(chat_id: str, worktree_path: str, requirement: str) -> None:
     """Run the first Claude execution in the dev group."""
-    # Send thinking card
-    thinking_card = formatter.build_thinking_card(requirement)
-    card_msg_id = feishu_client.send_card(chat_id, thinking_card)
+    try:
+        # Send thinking card
+        thinking_card = formatter.build_thinking_card(requirement)
+        card_msg_id = feishu_client.send_card(chat_id, thinking_card)
 
-    # Run Claude
-    result = await claude_runner.run(prompt=requirement, cwd=worktree_path)
+        # Run Claude
+        result = await claude_runner.run(prompt=requirement, cwd=worktree_path)
 
-    # Update session
-    if result.session_id:
-        await store.update_session_id(chat_id, result.session_id)
+        # Update session
+        if result.session_id:
+            await store.update_session_id(chat_id, result.session_id)
 
-    # Replace thinking card with result
-    result_card = formatter.build_result_card(
-        result.result,
-        cost=result.cost,
-        duration=result.duration,
-        is_error=result.is_error,
-    )
-    if card_msg_id:
-        feishu_client.update_card(card_msg_id, result_card)
-    else:
-        feishu_client.send_card(chat_id, result_card)
+        # Replace thinking card with result
+        result_card = formatter.build_result_card(
+            result.result,
+            cost=result.cost,
+            duration=result.duration,
+            is_error=result.is_error,
+        )
+        if card_msg_id:
+            feishu_client.update_card(card_msg_id, result_card)
+        else:
+            feishu_client.send_card(chat_id, result_card)
+    except Exception:
+        logger.exception("First Claude run failed")
+        feishu_client.send_text(chat_id, "首次 Claude 执行失败，请在群里重新发送需求")
 
 
 async def handle_card_action(action: dict, user_open_id: str) -> dict | None:

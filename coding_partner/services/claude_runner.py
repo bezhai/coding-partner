@@ -80,10 +80,34 @@ async def run(
     raw = stdout.decode(errors="replace").strip()
     try:
         data = json.loads(raw)
-        result_text = data.get("result", raw)
-        new_session_id = data.get("session_id", session_id)
-        cost_usd = data.get("cost_usd")
-        cost_str = f"${cost_usd:.4f}" if cost_usd else ""
+
+        # claude --print --output-format json returns a JSON array of blocks
+        # or a single object depending on version
+        if isinstance(data, list):
+            # Extract text from assistant blocks
+            texts = []
+            new_session_id = session_id
+            cost_usd = None
+            for item in data:
+                if isinstance(item, dict):
+                    if item.get("type") == "result":
+                        new_session_id = item.get("session_id", session_id)
+                        cost_usd = item.get("cost_usd")
+                        result_text = item.get("result", "")
+                        if result_text:
+                            texts.append(result_text)
+                    elif item.get("type") == "assistant":
+                        content = item.get("content", [])
+                        for block in content:
+                            if isinstance(block, dict) and block.get("type") == "text":
+                                texts.append(block.get("text", ""))
+            result_text = "\n".join(texts) if texts else raw
+            cost_str = f"${cost_usd:.4f}" if cost_usd else ""
+        else:
+            result_text = data.get("result", raw)
+            new_session_id = data.get("session_id", session_id)
+            cost_usd = data.get("cost_usd")
+            cost_str = f"${cost_usd:.4f}" if cost_usd else ""
 
         return ClaudeResult(
             result=result_text,
@@ -91,7 +115,7 @@ async def run(
             cost=cost_str,
             duration=duration_str,
         )
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, AttributeError):
         # Fallback: treat entire output as result
         return ClaudeResult(
             result=raw,

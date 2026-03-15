@@ -1,0 +1,15 @@
+[Unit]
+Description=Coding Partner - Feishu Vibe Coding Bot
+After=network.target
+
+[Service]
+Type=simple
+User=yuanzhihong.chiwei
+WorkingDirectory=/data00/home/yuanzhihong.chiwei/code/personal/coding-partner
+ExecStart=/home/yuanzhihong.chiwei/.local/bin/uv run python -m coding_partner.main
+Restart=on-failure
+RestartSec=5
+EnvironmentFile=/data00/home/yuanzhihong.chiwei/code/personal/coding-partner/.env
+
+[Install]
+WantedBy=multi-user.target

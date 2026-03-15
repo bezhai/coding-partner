@@ -89,53 +89,67 @@ async def create_worktree(repo_path: str, requirement: str) -> WorktreeInfo:
     return WorktreeInfo(path=str(wt_path), branch_name=branch_name)
 
 
-async def cleanup_worktree(worktree_path: str, repo_path: str) -> None:
-    """Remove a worktree and delete the branch."""
+async def cleanup_worktree(
+    worktree_path: str, repo_path: str, branch_name: str | None = None
+) -> None:
+    """Remove a worktree and force-delete the branch."""
     wt = Path(worktree_path)
-    if not wt.exists():
-        logger.warning("Worktree path does not exist: %s", worktree_path)
-        return
 
-    # Get branch name before removing
-    try:
+    # Try to discover branch from worktree if not provided
+    if not branch_name and wt.exists():
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "git",
+                "rev-parse",
+                "--abbrev-ref",
+                "HEAD",
+                cwd=worktree_path,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+            branch_name = stdout.decode().strip() or None
+        except Exception:
+            pass
+
+    # Remove worktree (even if path is gone, prune stale entries)
+    if wt.exists():
         proc = await asyncio.create_subprocess_exec(
             "git",
-            "rev-parse",
-            "--abbrev-ref",
-            "HEAD",
-            cwd=worktree_path,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
-        branch = stdout.decode().strip()
-    except Exception:
-        branch = None
-
-    # Remove worktree
-    proc = await asyncio.create_subprocess_exec(
-        "git",
-        "worktree",
-        "remove",
-        worktree_path,
-        "--force",
-        cwd=repo_path,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    await asyncio.wait_for(proc.communicate(), timeout=30)
-
-    # Delete branch if known
-    if branch and branch not in ("main", "master", "HEAD"):
-        proc = await asyncio.create_subprocess_exec(
-            "git",
-            "branch",
-            "-D",
-            branch,
+            "worktree",
+            "remove",
+            worktree_path,
+            "--force",
             cwd=repo_path,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        await asyncio.wait_for(proc.communicate(), timeout=10)
+        await asyncio.wait_for(proc.communicate(), timeout=30)
 
-    logger.info("Cleaned up worktree: %s (branch: %s)", worktree_path, branch)
+    # Prune stale worktree references
+    proc = await asyncio.create_subprocess_exec(
+        "git",
+        "worktree",
+        "prune",
+        cwd=repo_path,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    await asyncio.wait_for(proc.communicate(), timeout=10)
+
+    # Force-delete branch
+    if branch_name and branch_name not in ("main", "master", "HEAD"):
+        proc = await asyncio.create_subprocess_exec(
+            "git",
+            "branch",
+            "-D",
+            branch_name,
+            cwd=repo_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
+        if proc.returncode != 0:
+            logger.warning("branch -D %s failed: %s", branch_name, stderr.decode().strip())
+
+    logger.info("Cleaned up worktree: %s (branch: %s)", worktree_path, branch_name)

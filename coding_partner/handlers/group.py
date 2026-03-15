@@ -91,9 +91,7 @@ async def handle_group_message(
             )
         elif text == "/auto":
             await store.update_permission_mode(chat_id, "auto")
-            feishu_client.reply_text(
-                message_id, "已切换为 auto 模式 — Claude 将自动执行所有操作"
-            )
+            feishu_client.reply_text(message_id, "已切换为 auto 模式 — Claude 将自动执行所有操作")
         else:
             # Enqueue and ensure worker is running
             await store.enqueue_message(chat_id, message_id, text)
@@ -155,7 +153,9 @@ async def _handle_done(message_id: str, chat_id: str, binding: store.ChatBinding
     # Only clean up worktree if it's different from repo (i.e. not direct mode)
     if binding.worktree_path != binding.repo_path:
         try:
-            await worktree.cleanup_worktree(binding.worktree_path, binding.repo_path)
+            await worktree.cleanup_worktree(
+                binding.worktree_path, binding.repo_path, binding.branch_name
+            )
         except Exception as e:
             logger.warning("Worktree cleanup failed: %s", e)
 
@@ -182,9 +182,7 @@ async def _run_claude_streaming(
     The plan result is sent as an approval card. On approval, a second pass resumes
     with all tools enabled.
     """
-    is_confirm_mode = (
-        binding.permission_mode == "confirm" and disallowed_tools is None
-    )
+    is_confirm_mode = binding.permission_mode == "confirm" and disallowed_tools is None
     effective_disallowed = WRITE_TOOLS if is_confirm_mode else disallowed_tools
 
     # Send initial thinking card
@@ -218,9 +216,7 @@ async def _run_claude_streaming(
             need_update = True
 
         elif isinstance(event, StreamQuestion):
-            question_card = formatter.build_question_card(
-                event.question, event.options, chat_id
-            )
+            question_card = formatter.build_question_card(event.question, event.options, chat_id)
             feishu_client.send_card(chat_id, question_card)
 
         elif isinstance(event, StreamResult):

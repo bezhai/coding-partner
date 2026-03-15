@@ -290,7 +290,7 @@ async def handle_card_action(action: dict, user_open_id: str) -> dict | None:
             from coding_partner.handlers import group
 
             asyncio.create_task(group.handle_plan_approval(target_chat_id, approved))
-            msg = "方案��批准，开始执行..." if approved else "已拒绝方案"
+            msg = "方案已批准，开始执行..." if approved else "已拒绝方案"
             return {"toast": {"type": "success" if approved else "info", "content": msg}}
 
     return None

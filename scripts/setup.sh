@@ -35,18 +35,18 @@ fi
 source "$ENV_FILE"
 NEED_CONFIG=false
 
-if [ -z "${FEISHU_APP_ID:-}" ]; then
-    NEED_CONFIG=true
-fi
-if [ -z "${FEISHU_APP_SECRET:-}" ]; then
-    NEED_CONFIG=true
-fi
+for var in FEISHU_APP_ID FEISHU_APP_SECRET REPO_BASE_PATH; do
+    if [ -z "${!var:-}" ]; then
+        NEED_CONFIG=true
+    fi
+done
 
 if [ "$NEED_CONFIG" = true ]; then
-    warn "检测到飞书凭证未配置"
+    warn "检测到必填配置项未设置"
     echo ""
     read -rp "  FEISHU_APP_ID: " INPUT_APP_ID
     read -rp "  FEISHU_APP_SECRET: " INPUT_APP_SECRET
+    read -rp "  REPO_BASE_PATH (git 仓库所在目录): " INPUT_REPO_BASE
 
     if [ -n "$INPUT_APP_ID" ]; then
         sed -i "s|^FEISHU_APP_ID=.*|FEISHU_APP_ID=$INPUT_APP_ID|" "$ENV_FILE"
@@ -54,7 +54,10 @@ if [ "$NEED_CONFIG" = true ]; then
     if [ -n "$INPUT_APP_SECRET" ]; then
         sed -i "s|^FEISHU_APP_SECRET=.*|FEISHU_APP_SECRET=$INPUT_APP_SECRET|" "$ENV_FILE"
     fi
-    ok "凭证已写入 .env"
+    if [ -n "$INPUT_REPO_BASE" ]; then
+        sed -i "s|^REPO_BASE_PATH=.*|REPO_BASE_PATH=$INPUT_REPO_BASE|" "$ENV_FILE"
+    fi
+    ok "配置已写入 .env"
     echo ""
 fi
 

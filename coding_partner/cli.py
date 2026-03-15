@@ -171,7 +171,7 @@ def cmd_setup(_args: argparse.Namespace) -> None:
         ).strip()
         bot_open_id = input(f"  BOT_OPEN_ID [{existing_values.get('BOT_OPEN_ID', '')}]: ").strip()
         repo_base = input(
-            f"  REPO_BASE_PATH [{existing_values.get('REPO_BASE_PATH', '~/code')}]: "
+            f"  REPO_BASE_PATH (required) [{existing_values.get('REPO_BASE_PATH', '')}]: "
         ).strip()
         print()
 
@@ -183,9 +183,6 @@ def cmd_setup(_args: argparse.Namespace) -> None:
             existing_values["BOT_OPEN_ID"] = bot_open_id
         if repo_base:
             existing_values["REPO_BASE_PATH"] = repo_base
-
-        # Set defaults
-        existing_values.setdefault("REPO_BASE_PATH", "~/code")
         existing_values.setdefault("DB_PATH", str(DATA_DIR / "coding_partner.db"))
         existing_values.setdefault("LOG_LEVEL", "INFO")
 

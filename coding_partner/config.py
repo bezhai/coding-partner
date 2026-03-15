@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     bot_open_id: str = ""
 
     # --- Paths ---
-    repo_base_path: str = "~/code"
+    repo_base_path: str  # required — no sensible default, users must configure
     db_path: str = "./data/coding_partner.db"
     claude_cli: str = "claude"
     log_level: str = "INFO"

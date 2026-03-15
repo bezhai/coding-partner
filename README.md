@@ -65,7 +65,7 @@ uv run python -m coding_partner.main
 | `FEISHU_APP_ID` | (必填) | 飞书应用 App ID |
 | `FEISHU_APP_SECRET` | (必填) | 飞书应用 App Secret |
 | `BOT_OPEN_ID` | `""` | 机器人自身 open_id，用于过滤自己的消息 |
-| `REPO_BASE_PATH` | `~/code` | Git 仓库扫描根路径 |
+| `REPO_BASE_PATH` | (必填) | Git 仓库扫描根路径 |
 | `DB_PATH` | `./data/coding_partner.db` | SQLite 数据库路径 |
 | `CLAUDE_CLI` | `claude` | Claude CLI 命令路径 |
 | `LOG_LEVEL` | `INFO` | 日志级别 |

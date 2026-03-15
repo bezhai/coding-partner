@@ -31,16 +31,13 @@ if [ ! -f "$ENV_FILE" ]; then
     info "已从 .env.example 创建 .env"
 fi
 
-# 检查必填项
-source "$ENV_FILE"
-NEED_CONFIG=false
+# 从 .env 读取值（不污染当前 shell 环境）
+get_env_val() {
+    local key="$1"
+    grep -E "^${key}=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2-
+}
 
-for var in FEISHU_APP_ID FEISHU_APP_SECRET REPO_BASE_PATH; do
-    if [ -z "${!var:-}" ]; then
-        NEED_CONFIG=true
-    fi
-done
-
+# 交互式循环读取，不允许空值
 read_required() {
     local prompt="$1" current="$2" result=""
     while [ -z "$result" ]; do
@@ -57,19 +54,38 @@ read_required() {
     echo "$result"
 }
 
-source "$ENV_FILE" 2>/dev/null || true
+# 写入 .env（有则替换，无则追加）
+set_env_val() {
+    local key="$1" val="$2"
+    if grep -qE "^${key}=" "$ENV_FILE" 2>/dev/null; then
+        sed -i "s|^${key}=.*|${key}=${val}|" "$ENV_FILE"
+    else
+        echo "${key}=${val}" >> "$ENV_FILE"
+    fi
+}
 
-if [ -z "${FEISHU_APP_ID:-}" ] || [ -z "${FEISHU_APP_SECRET:-}" ] || [ -z "${REPO_BASE_PATH:-}" ]; then
-    info "请配置以下必填项（已有值可回车跳过）:"
-    echo ""
-    FEISHU_APP_ID="$(read_required "FEISHU_APP_ID" "${FEISHU_APP_ID:-}")"
-    FEISHU_APP_SECRET="$(read_required "FEISHU_APP_SECRET" "${FEISHU_APP_SECRET:-}")"
-    REPO_BASE_PATH="$(read_required "REPO_BASE_PATH (git 仓库所在目录)" "${REPO_BASE_PATH:-}")"
+# 逐项检查必填项，缺哪个问哪个
+REQUIRED_KEYS=("FEISHU_APP_ID" "FEISHU_APP_SECRET" "REPO_BASE_PATH")
+REQUIRED_LABELS=("FEISHU_APP_ID" "FEISHU_APP_SECRET" "REPO_BASE_PATH (git 仓库所在目录)")
+CHANGED=false
 
-    sed -i "s|^FEISHU_APP_ID=.*|FEISHU_APP_ID=$FEISHU_APP_ID|" "$ENV_FILE"
-    sed -i "s|^FEISHU_APP_SECRET=.*|FEISHU_APP_SECRET=$FEISHU_APP_SECRET|" "$ENV_FILE"
-    sed -i "s|^REPO_BASE_PATH=.*|REPO_BASE_PATH=$REPO_BASE_PATH|" "$ENV_FILE"
-    ok "配置已写入 .env"
+for i in "${!REQUIRED_KEYS[@]}"; do
+    key="${REQUIRED_KEYS[$i]}"
+    label="${REQUIRED_LABELS[$i]}"
+    current="$(get_env_val "$key")"
+    if [ -z "$current" ]; then
+        if [ "$CHANGED" = false ]; then
+            info "检测到必填项未配置:"
+            echo ""
+            CHANGED=true
+        fi
+        val="$(read_required "$label" "")"
+        set_env_val "$key" "$val"
+    fi
+done
+
+if [ "$CHANGED" = true ]; then
+    ok "配置已写入 $ENV_FILE"
     echo ""
 fi
 

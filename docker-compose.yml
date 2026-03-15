@@ -1,0 +1,17 @@
+services:
+  coding-partner:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      # Mount host repos so Claude can access them
+      - ${REPO_BASE_PATH:-~/code}:/repos
+      # Persist SQLite database
+      - ./data:/app/data
+      # Mount Claude CLI binary and config from host
+      # Adjust the path if your claude binary is elsewhere
+      - ${HOME}/.claude/local/bin/claude:/usr/local/bin/claude:ro
+      - ${HOME}/.claude:/root/.claude:ro
+    environment:
+      - REPO_BASE_PATH=/repos
+      - DB_PATH=/app/data/coding_partner.db

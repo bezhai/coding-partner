@@ -4,6 +4,7 @@ import logging
 import subprocess
 from pathlib import Path
 
+from coding_partner.config import settings
 from coding_partner.formatter import RepoInfo
 
 logger = logging.getLogger(__name__)
@@ -21,8 +22,10 @@ SKIP_DIRS = {
 }
 
 
-def scan_repos(base_path: str | Path, max_depth: int = 5) -> list[RepoInfo]:
+def scan_repos(base_path: str | Path, max_depth: int | None = None) -> list[RepoInfo]:
     """Recursively scan base_path for git repos, return (name, path, branch) list."""
+    if max_depth is None:
+        max_depth = settings.repo_scan_max_depth
     base = Path(base_path).expanduser().resolve()
     if not base.is_dir():
         logger.warning("repo base path does not exist: %s", base)

@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
 
@@ -11,6 +12,17 @@ class Settings(BaseSettings):
 
     # --- Paths ---
     repo_base_path: str  # required — no sensible default, users must configure
+
+    @field_validator("repo_base_path")
+    @classmethod
+    def _validate_repo_base_path(cls, v: str) -> str:
+        if not v:
+            raise ValueError("REPO_BASE_PATH is required — set it in .env or environment")
+        p = Path(v).expanduser()
+        if not p.is_dir():
+            raise ValueError(f"REPO_BASE_PATH does not exist: {p}")
+        return v
+
     db_path: str = "./data/coding_partner.db"
     claude_cli: str = "claude"
     log_level: str = "INFO"

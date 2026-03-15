@@ -11,7 +11,7 @@ from pathlib import Path
 CONFIG_DIR = Path.home() / ".config" / "coding-partner"
 DATA_DIR = Path.home() / ".local" / "share" / "coding-partner"
 
-_ENV_REQUIRED_KEYS = ("FEISHU_APP_ID", "FEISHU_APP_SECRET")
+_ENV_REQUIRED_KEYS = ("FEISHU_APP_ID", "FEISHU_APP_SECRET", "REPO_BASE_PATH")
 
 # Inline systemd service template (no project directory needed after install)
 _SYSTEMD_TEMPLATE = """\
@@ -163,26 +163,26 @@ def cmd_setup(_args: argparse.Namespace) -> None:
     need_input = any(not existing_values.get(k) for k in _ENV_REQUIRED_KEYS)
 
     if need_input:
-        print("Configure Feishu credentials:")
-        print()
-        app_id = input(f"  FEISHU_APP_ID [{existing_values.get('FEISHU_APP_ID', '')}]: ").strip()
-        app_secret = input(
-            f"  FEISHU_APP_SECRET [{existing_values.get('FEISHU_APP_SECRET', '')}]: "
-        ).strip()
-        bot_open_id = input(f"  BOT_OPEN_ID [{existing_values.get('BOT_OPEN_ID', '')}]: ").strip()
-        repo_base = input(
-            f"  REPO_BASE_PATH (required) [{existing_values.get('REPO_BASE_PATH', '')}]: "
-        ).strip()
+        print("Please configure required settings (existing values shown in brackets):")
         print()
 
-        if app_id:
-            existing_values["FEISHU_APP_ID"] = app_id
-        if app_secret:
-            existing_values["FEISHU_APP_SECRET"] = app_secret
+        for key in _ENV_REQUIRED_KEYS:
+            current = existing_values.get(key, "")
+            while True:
+                prompt = f"  {key}" + (f" [{current}]" if current else "") + ": "
+                val = input(prompt).strip() or current
+                if val:
+                    existing_values[key] = val
+                    break
+                print(f"    ↑ {key} is required")
+
+        # Optional
+        bot_open_id = input(
+            f"  BOT_OPEN_ID (optional) [{existing_values.get('BOT_OPEN_ID', '')}]: "
+        ).strip()
         if bot_open_id:
             existing_values["BOT_OPEN_ID"] = bot_open_id
-        if repo_base:
-            existing_values["REPO_BASE_PATH"] = repo_base
+        print()
         existing_values.setdefault("DB_PATH", str(DATA_DIR / "coding_partner.db"))
         existing_values.setdefault("LOG_LEVEL", "INFO")
 

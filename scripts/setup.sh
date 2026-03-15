@@ -41,22 +41,34 @@ for var in FEISHU_APP_ID FEISHU_APP_SECRET REPO_BASE_PATH; do
     fi
 done
 
-if [ "$NEED_CONFIG" = true ]; then
-    warn "检测到必填配置项未设置"
-    echo ""
-    read -rp "  FEISHU_APP_ID: " INPUT_APP_ID
-    read -rp "  FEISHU_APP_SECRET: " INPUT_APP_SECRET
-    read -rp "  REPO_BASE_PATH (git 仓库所在目录): " INPUT_REPO_BASE
+read_required() {
+    local prompt="$1" current="$2" result=""
+    while [ -z "$result" ]; do
+        if [ -n "$current" ]; then
+            read -rp "  $prompt [$current]: " result
+            result="${result:-$current}"
+        else
+            read -rp "  $prompt: " result
+        fi
+        if [ -z "$result" ]; then
+            warn "  ↑ 此项为必填"
+        fi
+    done
+    echo "$result"
+}
 
-    if [ -n "$INPUT_APP_ID" ]; then
-        sed -i "s|^FEISHU_APP_ID=.*|FEISHU_APP_ID=$INPUT_APP_ID|" "$ENV_FILE"
-    fi
-    if [ -n "$INPUT_APP_SECRET" ]; then
-        sed -i "s|^FEISHU_APP_SECRET=.*|FEISHU_APP_SECRET=$INPUT_APP_SECRET|" "$ENV_FILE"
-    fi
-    if [ -n "$INPUT_REPO_BASE" ]; then
-        sed -i "s|^REPO_BASE_PATH=.*|REPO_BASE_PATH=$INPUT_REPO_BASE|" "$ENV_FILE"
-    fi
+source "$ENV_FILE" 2>/dev/null || true
+
+if [ -z "${FEISHU_APP_ID:-}" ] || [ -z "${FEISHU_APP_SECRET:-}" ] || [ -z "${REPO_BASE_PATH:-}" ]; then
+    info "请配置以下必填项（已有值可回车跳过）:"
+    echo ""
+    FEISHU_APP_ID="$(read_required "FEISHU_APP_ID" "${FEISHU_APP_ID:-}")"
+    FEISHU_APP_SECRET="$(read_required "FEISHU_APP_SECRET" "${FEISHU_APP_SECRET:-}")"
+    REPO_BASE_PATH="$(read_required "REPO_BASE_PATH (git 仓库所在目录)" "${REPO_BASE_PATH:-}")"
+
+    sed -i "s|^FEISHU_APP_ID=.*|FEISHU_APP_ID=$FEISHU_APP_ID|" "$ENV_FILE"
+    sed -i "s|^FEISHU_APP_SECRET=.*|FEISHU_APP_SECRET=$FEISHU_APP_SECRET|" "$ENV_FILE"
+    sed -i "s|^REPO_BASE_PATH=.*|REPO_BASE_PATH=$REPO_BASE_PATH|" "$ENV_FILE"
     ok "配置已写入 .env"
     echo ""
 fi

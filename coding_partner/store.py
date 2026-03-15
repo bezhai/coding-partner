@@ -47,6 +47,18 @@ CREATE TABLE IF NOT EXISTS seen_messages (
 """
 
 
+async def _migrate(db: aiosqlite.Connection) -> None:
+    """Add columns that may be missing in older databases."""
+    async with db.execute("PRAGMA table_info(chat_binding)") as cursor:
+        columns = {row[1] for row in await cursor.fetchall()}
+    if "permission_mode" not in columns:
+        await db.execute(
+            "ALTER TABLE chat_binding ADD COLUMN permission_mode TEXT NOT NULL DEFAULT 'auto'"
+        )
+        await db.commit()
+        logger.info("Migrated chat_binding: added permission_mode column")
+
+
 async def get_db() -> aiosqlite.Connection:
     global _db
     if _db is None:
@@ -56,6 +68,7 @@ async def get_db() -> aiosqlite.Connection:
                 _db = await aiosqlite.connect(str(db_path))
                 _db.row_factory = aiosqlite.Row
                 await _db.executescript(SCHEMA)
+                await _migrate(_db)
                 await _db.commit()
     return _db
 
@@ -118,8 +131,7 @@ async def create_binding(
            (chat_id, worktree_path, repo_path, branch_name, user_id, session_id,
             permission_mode, created_at)
            VALUES (?, ?, ?, ?, ?, NULL, ?, ?)""",
-        (chat_id, worktree_path, repo_path, branch_name, user_id,
-         settings.permission_mode, now),
+        (chat_id, worktree_path, repo_path, branch_name, user_id, settings.permission_mode, now),
     )
     await db.commit()
 

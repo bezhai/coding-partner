@@ -176,7 +176,7 @@ if [ "$DEPLOY_MODE" = "systemd" ]; then
         sudo cp "$PROJECT_DIR/systemd/$SERVICE_NAME.service" "/etc/systemd/system/$SERVICE_NAME.service"
         sudo systemctl daemon-reload
         sudo systemctl enable "$SERVICE_NAME"
-        sudo systemctl start "$SERVICE_NAME"
+        sudo systemctl restart "$SERVICE_NAME"
         echo ""
         ok "服务已启动!"
         echo ""

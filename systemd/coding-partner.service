@@ -5,11 +5,11 @@ After=network.target
 [Service]
 Type=simple
 User=yuanzhihong.chiwei
-WorkingDirectory=/home/yuanzhihong.chiwei/code/personal/coding-partner
+WorkingDirectory=/home/yuanzhihong.chiwei/projects/coding-partner
 ExecStart=/bin/bash -lc 'exec /home/yuanzhihong.chiwei/.local/bin/uv run python -m coding_partner.main'
 Restart=on-failure
 RestartSec=5
-EnvironmentFile=/home/yuanzhihong.chiwei/code/personal/coding-partner/.env
+EnvironmentFile=/home/yuanzhihong.chiwei/projects/coding-partner/.env
 
 [Install]
 WantedBy=multi-user.target

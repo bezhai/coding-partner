@@ -6,50 +6,17 @@ import logging
 import shlex
 import time
 from collections.abc import AsyncGenerator, Callable
-from dataclasses import dataclass
 
 from coding_partner.config import settings
+from coding_partner.services.agent_runner import (
+    AgentResult,
+    StreamDelta,
+    StreamQuestion,
+    StreamResult,
+    StreamToolUse,
+)
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class ClaudeResult:
-    result: str = ""
-    session_id: str | None = None
-    cost: str = ""
-    duration: str = ""
-    is_error: bool = False
-
-
-@dataclass
-class StreamDelta:
-    """Incremental text from assistant message."""
-
-    text: str
-
-
-@dataclass
-class StreamToolUse:
-    """A tool call made by Claude."""
-
-    name: str
-    summary: str  # human-readable one-liner
-
-
-@dataclass
-class StreamQuestion:
-    """Claude is asking the user a question via AskUserQuestion."""
-
-    question: str
-    options: list[str]
-
-
-@dataclass
-class StreamResult:
-    """Final result from the stream."""
-
-    result: ClaudeResult
 
 
 def _summarize_tool_use(name: str, inp: dict) -> str:
@@ -65,7 +32,7 @@ def _summarize_tool_use(name: str, inp: dict) -> str:
         return f"📝 写入 {path.split('/')[-1]}" if path else "📝 写入文件"
     if name == "Bash":
         cmd = inp.get("command", "")
-        return f"⚡ `{cmd[:60]}`" if cmd else "⚡ 执行命令"
+        return f"⚡ `{cmd[:100]}`" if cmd else "⚡ 执行命令"
     if name in ("Glob", "Grep"):
         pattern = inp.get("pattern", "")
         return f"🔍 搜索 {pattern[:40]}" if pattern else f"🔍 {name}"
@@ -82,7 +49,7 @@ async def run(
     prompt: str,
     cwd: str,
     session_id: str | None = None,
-) -> ClaudeResult:
+) -> AgentResult:
     """Run claude --print and return structured result."""
     cmd = [
         settings.claude_cli,
@@ -116,20 +83,20 @@ async def run(
         except ProcessLookupError:
             pass
         timeout_min = settings.claude_timeout // 60
-        return ClaudeResult(
+        return AgentResult(
             result=f"Claude 执行超时（{timeout_min} 分钟限制）",
             is_error=True,
             duration=f"{settings.claude_timeout}s",
         )
     except Exception as e:
-        return ClaudeResult(result=f"启动 Claude 失败: {e}", is_error=True)
+        return AgentResult(result=f"启动 Claude 失败: {e}", is_error=True)
 
     elapsed = time.monotonic() - start
     duration_str = f"{elapsed:.1f}s"
 
     if proc.returncode != 0:
         error_text = stderr.decode(errors="replace").strip()
-        return ClaudeResult(
+        return AgentResult(
             result=f"Claude 退出码 {proc.returncode}:\n{error_text}",
             is_error=True,
             duration=duration_str,
@@ -168,7 +135,7 @@ async def run(
             cost_usd = data.get("cost_usd")
             cost_str = f"${cost_usd:.4f}" if cost_usd else ""
 
-        return ClaudeResult(
+        return AgentResult(
             result=result_text,
             session_id=new_session_id,
             cost=cost_str,
@@ -176,7 +143,7 @@ async def run(
         )
     except (json.JSONDecodeError, AttributeError):
         # Fallback: treat entire output as result
-        return ClaudeResult(
+        return AgentResult(
             result=raw,
             session_id=session_id,
             duration=duration_str,
@@ -186,12 +153,25 @@ async def run(
 WRITE_TOOLS = ["Bash", "Write", "Edit", "NotebookEdit"]
 
 
+def _build_prompt_with_images(prompt: str, image_paths: list[str] | None) -> str:
+    """Prepend image references to prompt so Claude reads them with the Read tool."""
+    if not image_paths:
+        return prompt
+    refs = "\n".join(
+        f"[用户发送了图片，请先用 Read 工具查看: {p}]" for p in image_paths
+    )
+    if prompt:
+        return f"{refs}\n\n{prompt}"
+    return refs
+
+
 async def run_stream(
     prompt: str,
     cwd: str,
     session_id: str | None = None,
     proc_callback: Callable[[asyncio.subprocess.Process], None] | None = None,
     disallowed_tools: list[str] | None = None,
+    image_paths: list[str] | None = None,
 ) -> AsyncGenerator[StreamDelta | StreamToolUse | StreamQuestion | StreamResult, None]:
     """Run claude with streaming output, yielding deltas and a final result.
 
@@ -199,7 +179,10 @@ async def run_stream(
     If proc_callback is given, it is called with the subprocess once created
     (useful for allowing external cancellation).
     If disallowed_tools is given, those tools are blocked via --disallowedTools.
+    If image_paths is given, the prompt is augmented with instructions to read the images.
     """
+    effective_prompt = _build_prompt_with_images(prompt, image_paths)
+
     claude_cmd = [
         settings.claude_cli,
         "--print",
@@ -215,7 +198,7 @@ async def run_stream(
     if session_id:
         claude_cmd.extend(["--resume", session_id])
 
-    claude_cmd.extend(["--", prompt])
+    claude_cmd.extend(["--", effective_prompt])
 
     # Wrap in `script` to allocate a PTY — forces the binary to line-buffer stdout
     inner = " ".join(shlex.quote(c) for c in claude_cmd)
@@ -233,7 +216,7 @@ async def run_stream(
             limit=10 * 1024 * 1024,  # 10MB line buffer for large JSON lines
         )
     except Exception as e:
-        yield StreamResult(result=ClaudeResult(result=f"启动 Claude 失败: {e}", is_error=True))
+        yield StreamResult(result=AgentResult(result=f"启动 Claude 失败: {e}", is_error=True))
         return
 
     if proc_callback:
@@ -245,10 +228,27 @@ async def run_stream(
     cost_usd = None
     result_text = ""
 
+    idle_timeout = settings.stream_idle_timeout
+    timed_out = False
+
     try:
-        logger.info("Stream: entering readline loop")
+        logger.info("Stream: entering readline loop (idle_timeout=%ds)", idle_timeout)
         while True:
-            raw_line = await proc.stdout.readline()
+            try:
+                raw_line = await asyncio.wait_for(
+                    proc.stdout.readline(), timeout=idle_timeout
+                )
+            except TimeoutError:
+                logger.warning(
+                    "Stream: no output for %ds, killing process", idle_timeout
+                )
+                timed_out = True
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
+                break
+
             if not raw_line:
                 logger.info("Stream: EOF reached")
                 break  # EOF
@@ -263,11 +263,15 @@ async def run_stream(
                 continue
 
             event_type = event.get("type", "")
-            logger.info("Stream event: type=%s", event_type)
 
-            # stream-json emits full "assistant" messages (one per turn)
-            # Content blocks include text and tool_use
-            if event_type == "assistant":
+            # ---- system: init / lifecycle ----------------------------------
+            if event_type == "system":
+                subtype = event.get("subtype", "")
+                logger.info("Stream event: system/%s", subtype)
+
+            # ---- assistant: content blocks ---------------------------------
+            elif event_type == "assistant":
+                logger.info("Stream event: assistant")
                 msg = event.get("message", {})
                 content = msg.get("content", [])
                 for block in content:
@@ -283,27 +287,58 @@ async def run_stream(
                         inp = block.get("input", {})
                         if name == "AskUserQuestion":
                             questions = inp.get("questions", [])
+                            all_qs: list[dict] = []
                             for q in questions:
-                                question_text = q.get("question", "")
-                                options = [
+                                qt = q.get("question", "")
+                                opts = [
                                     o.get("label", "")
                                     for o in q.get("options", [])
                                 ]
-                                if question_text:
-                                    yield StreamQuestion(
-                                        question=question_text,
-                                        options=options,
-                                    )
+                                if qt:
+                                    all_qs.append({"question": qt, "options": opts})
+                            if len(all_qs) == 1:
+                                yield StreamQuestion(
+                                    question=all_qs[0]["question"],
+                                    options=all_qs[0]["options"],
+                                )
+                            elif len(all_qs) > 1:
+                                combined = "\n".join(
+                                    f"{i + 1}. {q['question']}"
+                                    for i, q in enumerate(all_qs)
+                                )
+                                yield StreamQuestion(
+                                    question=combined,
+                                    options=[],
+                                    all_questions=all_qs,
+                                )
                         else:
                             yield StreamToolUse(
                                 name=name,
                                 summary=_summarize_tool_use(name, inp),
                             )
 
+            # ---- rate_limit_event: rate limit info -------------------------
+            elif event_type == "rate_limit_event":
+                info = event.get("rate_limit_info", {})
+                status = info.get("status", "")
+                logger.info("Stream event: rate_limit_event status=%s", status)
+
+            # ---- result: final result --------------------------------------
             elif event_type == "result":
+                subtype = event.get("subtype", "")
+                logger.info("Stream event: result/%s", subtype)
                 new_session_id = event.get("session_id", session_id)
                 cost_usd = event.get("total_cost_usd")
                 result_text = event.get("result", "")
+                break  # result is the final event — stop reading immediately
+
+            # ---- unknown: log for debugging --------------------------------
+            else:
+                logger.warning(
+                    "Stream event: unhandled type=%s keys=%s",
+                    event_type,
+                    list(event.keys()),
+                )
 
         # Wait for process to finish
         await asyncio.wait_for(proc.wait(), timeout=30)
@@ -317,12 +352,17 @@ async def run_stream(
     elapsed = time.monotonic() - start
     duration_str = f"{elapsed:.1f}s"
     cost_str = f"${cost_usd:.4f}" if cost_usd else ""
-    final_text = result_text or "(无输出)"
 
-    is_error = proc.returncode is not None and proc.returncode != 0
+    if timed_out:
+        timeout_min = idle_timeout // 60
+        final_text = f"执行超时（{timeout_min} 分钟无输出），已终止"
+        is_error = True
+    else:
+        final_text = result_text or "(无输出)"
+        is_error = proc.returncode is not None and proc.returncode != 0
 
     yield StreamResult(
-        result=ClaudeResult(
+        result=AgentResult(
             result=final_text,
             session_id=new_session_id,
             cost=cost_str,

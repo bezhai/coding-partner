@@ -21,3 +21,6 @@ data/
 
 # Ruff
 .ruff_cache/
+
+# Runtime data
+.coding-partner/

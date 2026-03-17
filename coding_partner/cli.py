@@ -78,6 +78,18 @@ def _resolve_env_file(explicit: str | None) -> Path | None:
     return None
 
 
+def _current_agent_provider() -> str:
+    provider = os.environ.get("AGENT_PROVIDER", "claude").strip().lower()
+    return provider if provider in {"claude", "codex"} else "claude"
+
+
+def _current_agent_cli() -> tuple[str, str]:
+    provider = _current_agent_provider()
+    if provider == "codex":
+        return os.environ.get("CODEX_CLI", "codex"), "Codex CLI"
+    return os.environ.get("CLAUDE_CLI", "claude"), "Claude Code CLI"
+
+
 # ── Subcommands ─────────────────────────────────────────
 
 
@@ -99,11 +111,17 @@ def cmd_check(_args: argparse.Namespace) -> None:
     ok = True
 
     # Tools
+    env_file = _resolve_env_file(None)
+    if env_file:
+        _load_env_file(env_file)
+
+    agent_cli, agent_desc = _current_agent_cli()
     tools = [
-        ("claude", "Claude Code CLI"),
+        (agent_cli, agent_desc),
         ("git", "Git version control"),
-        ("script", "PTY allocation (bsdutils)"),
     ]
+    if _current_agent_provider() == "claude":
+        tools.append(("script", "PTY allocation (bsdutils)"))
     for cmd, desc in tools:
         if shutil.which(cmd):
             print(f"  [OK]   {cmd} — {desc}")
@@ -183,8 +201,17 @@ def cmd_setup(_args: argparse.Namespace) -> None:
         if bot_open_id:
             existing_values["BOT_OPEN_ID"] = bot_open_id
         print()
+        existing_values.setdefault(
+            "AGENT_PROVIDER",
+            existing_values.get("AGENT_PROVIDER", "claude"),
+        )
         existing_values.setdefault("DB_PATH", str(DATA_DIR / "coding_partner.db"))
         existing_values.setdefault("LOG_LEVEL", "INFO")
+        os.environ.setdefault("AGENT_PROVIDER", existing_values["AGENT_PROVIDER"])
+        if "CLAUDE_CLI" in existing_values:
+            os.environ.setdefault("CLAUDE_CLI", existing_values["CLAUDE_CLI"])
+        if "CODEX_CLI" in existing_values:
+            os.environ.setdefault("CODEX_CLI", existing_values["CODEX_CLI"])
 
         # Write .env
         with open(env_file, "w") as f:
@@ -193,17 +220,26 @@ def cmd_setup(_args: argparse.Namespace) -> None:
         print(f"  Config saved to {env_file}")
     else:
         print(f"  Config already exists: {env_file}")
+        os.environ.setdefault("AGENT_PROVIDER", existing_values.get("AGENT_PROVIDER", "claude"))
+        if "CLAUDE_CLI" in existing_values:
+            os.environ.setdefault("CLAUDE_CLI", existing_values["CLAUDE_CLI"])
+        if "CODEX_CLI" in existing_values:
+            os.environ.setdefault("CODEX_CLI", existing_values["CODEX_CLI"])
 
     print()
 
     # 3. Check dependencies
     print("Checking dependencies...")
     missing = []
-    for cmd, desc in [
-        ("claude", "Claude Code CLI"),
+    agent_cli, agent_desc = _current_agent_cli()
+    deps = [
+        (agent_cli, agent_desc),
         ("git", "Git"),
-        ("script", "PTY allocation"),
-    ]:
+    ]
+    if _current_agent_provider() == "claude":
+        deps.append(("script", "PTY allocation"))
+
+    for cmd, desc in deps:
         if shutil.which(cmd):
             print(f"  [OK]   {cmd}")
         else:
@@ -276,7 +312,7 @@ def cmd_setup(_args: argparse.Namespace) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="coding-partner",
-        description="Coding Partner — Feishu vibe coding bot powered by Claude Code",
+        description="Coding Partner — Feishu vibe coding bot powered by Claude or Codex",
     )
     sub = parser.add_subparsers(dest="command")
 

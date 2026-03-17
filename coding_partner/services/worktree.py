@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from coding_partner.config import settings
+from coding_partner.services.agent_runner import provider_display_name
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +19,7 @@ class WorktreeInfo:
 
 
 async def generate_branch_name(requirement: str) -> str:
-    """Use Claude to generate a branch name from a requirement."""
+    """Use the configured agent to generate a branch name from a requirement."""
     prompt = (
         "Generate a git branch name for this requirement. "
         "Format: type/kebab-case-name (e.g., feat/add-captcha, fix/login-timeout). "
@@ -28,14 +29,31 @@ async def generate_branch_name(requirement: str) -> str:
     )
 
     try:
+        if settings.normalized_agent_provider == "codex":
+            cmd = [
+                settings.codex_cli,
+                "exec",
+                "--dangerously-bypass-approvals-and-sandbox",
+                "--skip-git-repo-check",
+                "--color",
+                "never",
+            ]
+            if settings.codex_model:
+                cmd.extend(["-m", settings.codex_model])
+            cmd.append(prompt)
+        else:
+            cmd = [
+                settings.claude_cli,
+                "-p",
+                prompt,
+                "--model",
+                settings.branch_name_model,
+                "--output-format",
+                "text",
+            ]
+
         proc = await asyncio.create_subprocess_exec(
-            settings.claude_cli,
-            "-p",
-            prompt,
-            "--model",
-            settings.branch_name_model,
-            "--output-format",
-            "text",
+            *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -46,7 +64,11 @@ async def generate_branch_name(requirement: str) -> str:
         if re.match(r"^(feat|fix|refactor|chore|docs)/[a-z0-9][a-z0-9-]*$", name):
             return name
 
-        logger.warning("AI generated invalid branch name: %s, using fallback", name)
+        logger.warning(
+            "%s generated invalid branch name: %s, using fallback",
+            provider_display_name(),
+            name,
+        )
     except Exception as e:
         logger.warning("branch name generation failed: %s", e)
 

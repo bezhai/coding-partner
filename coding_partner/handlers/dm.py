@@ -3,23 +3,17 @@
 State machine:
   - /repo → scan repos → send select card
   - Card callback (select_repo) → save user context → confirm
-  - Natural language requirement → create worktree + group + first Claude run
+  - Natural language requirement → create worktree + group + first agent run
 """
 
 import asyncio
 import logging
-import time
 from pathlib import Path
 
 from coding_partner import feishu_client, formatter, store
 from coding_partner.config import settings
-from coding_partner.services import claude_runner, group_manager, worktree
-from coding_partner.services.claude_runner import (
-    StreamDelta,
-    StreamQuestion,
-    StreamResult,
-    StreamToolUse,
-)
+from coding_partner.services import group_manager, worktree
+from coding_partner.services.agent_runner import provider_display_name
 
 logger = logging.getLogger(__name__)
 
@@ -30,15 +24,30 @@ _pending_confirms: dict[str, dict] = {}
 async def handle_dm_message(
     message_id: str,
     user_open_id: str,
-    text: str,
+    text: str | None,
     chat_id: str,
+    image_key: str | None = None,
 ) -> None:
-    """Handle a private chat text message."""
-    text = text.strip()
+    """Handle a private chat message."""
+    if text:
+        text = text.strip()
 
     try:
+        if image_key and not text:
+            agent_name = provider_display_name(await store.get_user_agent_provider(user_open_id))
+            await feishu_client.async_reply_text(
+                message_id,
+                f"图片消息请在开发群中发送，{agent_name} 可以直接查看图片并回应",
+            )
+            return
+
+        if not text:
+            return
+
         if text == "/repo":
             await _handle_repo_command(message_id, user_open_id, chat_id)
+        elif text == "/cli":
+            await _handle_cli_command(message_id, user_open_id)
         elif text == "/start":
             await _handle_start(message_id, user_open_id, chat_id)
         else:
@@ -54,11 +63,18 @@ async def _handle_repo_command(message_id: str, user_open_id: str, chat_id: str)
     repos = scan_repos(settings.repo_base)
 
     if not repos:
-        feishu_client.reply_text(message_id, f"在 {settings.repo_base} 下未找到 git 仓库")
+        await feishu_client.async_reply_text(message_id, f"在 {settings.repo_base} 下未找到 git 仓库")
         return
 
     card = formatter.build_repo_select_card(repos)
-    feishu_client.reply_card(message_id, card)
+    await feishu_client.async_reply_card(message_id, card)
+
+
+async def _handle_cli_command(message_id: str, user_open_id: str) -> None:
+    """Show agent selection card for future sessions."""
+    current_provider = await store.get_user_agent_provider(user_open_id)
+    card = formatter.build_cli_select_card(current_provider)
+    await feishu_client.async_reply_card(message_id, card)
 
 
 async def _handle_start(message_id: str, user_open_id: str, chat_id: str) -> None:
@@ -66,11 +82,13 @@ async def _handle_start(message_id: str, user_open_id: str, chat_id: str) -> Non
     repo_path = await store.get_user_repo(user_open_id)
 
     if not repo_path:
-        feishu_client.reply_text(message_id, "请先使用 /repo 选择项目")
+        await feishu_client.async_reply_text(message_id, "请先使用 /repo 选择项目")
         return
 
     repo_name = Path(repo_path).name
-    feishu_client.reply_text(message_id, f"正在为 {repo_name} 创建开发群...")
+    agent_provider = await store.get_user_agent_provider(user_open_id)
+    agent_name = provider_display_name(agent_provider)
+    await feishu_client.async_reply_text(message_id, f"正在为 {repo_name} 创建开发群...")
 
     try:
         # Get current branch name
@@ -82,9 +100,11 @@ async def _handle_start(message_id: str, user_open_id: str, chat_id: str) -> Non
         stdout, _ = await proc.communicate()
         branch = stdout.decode().strip() or "main"
 
-        group_chat_id = group_manager.create_dev_group(user_open_id, branch, repo_name)
+        group_chat_id = await asyncio.to_thread(
+            group_manager.create_dev_group, user_open_id, branch, repo_name
+        )
         if not group_chat_id:
-            feishu_client.reply_text(message_id, "创建开发群失败")
+            await feishu_client.async_reply_text(message_id, "创建开发群失败")
             return
 
         await store.create_binding(
@@ -93,18 +113,21 @@ async def _handle_start(message_id: str, user_open_id: str, chat_id: str) -> Non
             repo_path=repo_path,
             branch_name=branch,
             user_id=user_open_id,
+            agent_provider=agent_provider,
         )
 
-        setup_card = formatter.build_setup_card(repo_name, branch, group_chat_id)
-        feishu_client.send_card(group_chat_id, setup_card)
+        setup_card = formatter.build_setup_card(
+            repo_name, branch, group_chat_id, agent_name=agent_name
+        )
+        await feishu_client.async_send_card(group_chat_id, setup_card)
 
-        feishu_client.reply_text(
+        await feishu_client.async_reply_text(
             message_id,
             f"已创建开发群 {repo_name} | {branch}\n直接在群里发消息即可",
         )
     except Exception as e:
         logger.exception("Failed to handle /start")
-        feishu_client.reply_text(message_id, f"创建失败: {e}")
+        await feishu_client.async_reply_text(message_id, f"创建失败: {e}")
 
 
 async def _handle_requirement(
@@ -117,7 +140,7 @@ async def _handle_requirement(
     repo_path = await store.get_user_repo(user_open_id)
 
     if not repo_path:
-        feishu_client.reply_text(message_id, "请先使用 /repo 选择项目")
+        await feishu_client.async_reply_text(message_id, "请先使用 /repo 选择项目")
         return
 
     repo_name = Path(repo_path).name
@@ -129,11 +152,11 @@ async def _handle_requirement(
         "chat_id": chat_id,
     }
     card = formatter.build_confirm_card(repo_name, requirement)
-    feishu_client.reply_card(message_id, card)
+    await feishu_client.async_reply_card(message_id, card)
 
 
 async def _execute_requirement(user_open_id: str, pending: dict) -> None:
-    """Actually create worktree + dev group + first Claude run (after user confirmation)."""
+    """Actually create worktree + dev group + first agent run (after user confirmation)."""
     requirement = pending["requirement"]
     repo_path = pending["repo_path"]
     chat_id = pending["chat_id"]
@@ -144,9 +167,11 @@ async def _execute_requirement(user_open_id: str, pending: dict) -> None:
 
         # 2. Create Feishu dev group
         repo_name = Path(repo_path).name
-        group_chat_id = group_manager.create_dev_group(user_open_id, wt_info.branch_name, repo_name)
+        group_chat_id = await asyncio.to_thread(
+            group_manager.create_dev_group, user_open_id, wt_info.branch_name, repo_name
+        )
         if not group_chat_id:
-            feishu_client.send_text(chat_id, "创建开发群失败")
+            await feishu_client.async_send_text(chat_id, "创建开发群失败")
             return
 
         # 3. Save binding
@@ -156,87 +181,36 @@ async def _execute_requirement(user_open_id: str, pending: dict) -> None:
             repo_path=repo_path,
             branch_name=wt_info.branch_name,
             user_id=user_open_id,
+            agent_provider=await store.get_user_agent_provider(user_open_id),
         )
 
         # 4. Send setup card to the dev group
-        setup_card = formatter.build_setup_card(repo_name, wt_info.branch_name, group_chat_id)
-        feishu_client.send_card(group_chat_id, setup_card)
+        agent_provider = await store.get_user_agent_provider(user_open_id)
+        agent_name = provider_display_name(agent_provider)
+        setup_card = formatter.build_setup_card(
+            repo_name,
+            wt_info.branch_name,
+            group_chat_id,
+            agent_name=agent_name,
+        )
+        await feishu_client.async_send_card(group_chat_id, setup_card)
 
         # 5. Confirm in DM
-        feishu_client.send_text(
+        await feishu_client.async_send_text(
             chat_id,
             f"已创建开发群 🔧 {repo_name} | {wt_info.branch_name}\n请到群里继续对话",
         )
 
-        # 6. Run first Claude execution in the dev group
-        asyncio.create_task(_run_first_claude(group_chat_id, wt_info.path, requirement))
+        # 6. Enqueue first agent execution through the queue (avoids concurrent
+        #    claude -p if the user sends a message before this finishes)
+        from coding_partner import worker_manager
+
+        await store.enqueue_message(group_chat_id, "", requirement)
+        await worker_manager.ensure_worker(group_chat_id)
 
     except Exception as e:
         logger.exception("Failed to execute requirement")
-        feishu_client.send_text(chat_id, f"创建开发环境失败: {e}")
-
-
-async def _run_first_claude(chat_id: str, worktree_path: str, requirement: str) -> None:
-    """Run the first Claude execution in the dev group with streaming."""
-    try:
-        # Send thinking card
-        thinking_card = formatter.build_thinking_card(requirement)
-        card_msg_id = feishu_client.send_card(chat_id, thinking_card)
-
-        accumulated = ""
-        tool_activities: list[str] = []
-        last_update_time = time.monotonic()
-        need_update = False
-
-        async for event in claude_runner.run_stream(
-            prompt=requirement, cwd=worktree_path
-        ):
-            if isinstance(event, StreamDelta):
-                accumulated += event.text
-                need_update = True
-
-            elif isinstance(event, StreamToolUse):
-                tool_activities.append(event.summary)
-                if len(tool_activities) > settings.tool_activity_limit:
-                    tool_activities = tool_activities[-settings.tool_activity_limit :]
-                need_update = True
-
-            elif isinstance(event, StreamQuestion):
-                question_card = formatter.build_question_card(
-                    event.question, event.options, chat_id
-                )
-                feishu_client.send_card(chat_id, question_card)
-
-            elif isinstance(event, StreamResult):
-                result = event.result
-
-                if result.session_id:
-                    await store.update_session_id(chat_id, result.session_id)
-
-                result_card = formatter.build_result_card(
-                    result.result,
-                    cost=result.cost,
-                    duration=result.duration,
-                    is_error=result.is_error,
-                )
-                if card_msg_id:
-                    feishu_client.update_card(card_msg_id, result_card)
-                else:
-                    feishu_client.send_card(chat_id, result_card)
-
-            if need_update:
-                now = time.monotonic()
-                if now - last_update_time >= settings.stream_cooldown:
-                    if card_msg_id:
-                        streaming_card = formatter.build_streaming_card(
-                            requirement, accumulated, tool_activities
-                        )
-                        feishu_client.update_card(card_msg_id, streaming_card)
-                    last_update_time = now
-                    need_update = False
-    except Exception:
-        logger.exception("First Claude run failed")
-        feishu_client.send_text(chat_id, "首次 Claude 执行失败，请在群里重新发送需求")
+        await feishu_client.async_send_text(chat_id, f"创建开发环境失败: {e}")
 
 
 async def handle_card_action(action: dict, user_open_id: str) -> dict | None:
@@ -260,6 +234,20 @@ async def handle_card_action(action: dict, user_open_id: str) -> dict | None:
             }
         }
 
+    if act == "select_cli":
+        selected_option = action.get("option")
+        if selected_option not in {"claude", "codex"}:
+            return None
+
+        await store.set_user_agent_provider(user_open_id, selected_option)
+        agent_name = provider_display_name(selected_option)
+        return {
+            "toast": {
+                "type": "success",
+                "content": f"已切换默认 Agent: {agent_name}",
+            }
+        }
+
     if act == "confirm_requirement":
         pending = _pending_confirms.pop(user_open_id, None)
         if not pending:
@@ -273,15 +261,26 @@ async def handle_card_action(action: dict, user_open_id: str) -> dict | None:
             return {"toast": {"type": "info", "content": "已取消"}}
 
     if act == "answer_question":
-        answer = value.get("answer", "")
         target_chat_id = value.get("chat_id", "")
+        # Form submission (multi-question): collect all dropdown answers
+        form_value = action.get("form_value")
+        if form_value and target_chat_id:
+            parts = []
+            for key in sorted(form_value.keys()):
+                if key.startswith("q_"):
+                    parts.append(form_value[key])
+            answer = "\n".join(f"{i + 1}. {a}" for i, a in enumerate(parts))
+        else:
+            # Single-question button click
+            answer = value.get("answer", "")
         if answer and target_chat_id:
-            from coding_partner.handlers import group
+            from coding_partner import worker_manager
 
             # Enqueue the answer as a new message to the dev group
             await store.enqueue_message(target_chat_id, "", answer)
-            group.ensure_worker(target_chat_id)
-            return {"toast": {"type": "success", "content": f"已回复: {answer}"}}
+            await worker_manager.ensure_worker(target_chat_id)
+            display = answer if len(answer) <= 50 else answer[:50] + "..."
+            return {"toast": {"type": "success", "content": f"已回复: {display}"}}
 
     if act == "approve_plan":
         target_chat_id = value.get("chat_id", "")

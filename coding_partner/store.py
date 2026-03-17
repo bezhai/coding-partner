@@ -18,6 +18,7 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS user_context (
     user_id TEXT PRIMARY KEY,
     repo_path TEXT NOT NULL,
+    agent_provider TEXT NOT NULL DEFAULT 'claude',
     updated_at TEXT NOT NULL
 );
 
@@ -27,6 +28,7 @@ CREATE TABLE IF NOT EXISTS chat_binding (
     repo_path TEXT NOT NULL,
     branch_name TEXT NOT NULL,
     user_id TEXT NOT NULL,
+    agent_provider TEXT NOT NULL DEFAULT 'claude',
     session_id TEXT,
     permission_mode TEXT NOT NULL DEFAULT 'auto',
     created_at TEXT NOT NULL
@@ -37,6 +39,15 @@ CREATE TABLE IF NOT EXISTS message_queue (
     chat_id TEXT NOT NULL,
     message_id TEXT NOT NULL,
     text TEXT NOT NULL,
+    image_paths TEXT NOT NULL DEFAULT '',
+    disallowed_tools TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS pending_plans (
+    chat_id TEXT PRIMARY KEY,
+    session_id TEXT,
+    plan_text TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
 
@@ -44,11 +55,25 @@ CREATE TABLE IF NOT EXISTS seen_messages (
     message_id TEXT PRIMARY KEY,
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS active_cards (
+    chat_id TEXT PRIMARY KEY,
+    card_msg_id TEXT NOT NULL
+);
 """
 
 
 async def _migrate(db: aiosqlite.Connection) -> None:
     """Add columns that may be missing in older databases."""
+    async with db.execute("PRAGMA table_info(user_context)") as cursor:
+        user_columns = {row[1] for row in await cursor.fetchall()}
+    if "agent_provider" not in user_columns:
+        await db.execute(
+            "ALTER TABLE user_context ADD COLUMN agent_provider TEXT NOT NULL DEFAULT 'claude'"
+        )
+        await db.commit()
+        logger.info("Migrated user_context: added agent_provider column")
+
     async with db.execute("PRAGMA table_info(chat_binding)") as cursor:
         columns = {row[1] for row in await cursor.fetchall()}
     if "permission_mode" not in columns:
@@ -57,6 +82,27 @@ async def _migrate(db: aiosqlite.Connection) -> None:
         )
         await db.commit()
         logger.info("Migrated chat_binding: added permission_mode column")
+    if "agent_provider" not in columns:
+        await db.execute(
+            "ALTER TABLE chat_binding ADD COLUMN agent_provider TEXT NOT NULL DEFAULT 'claude'"
+        )
+        await db.commit()
+        logger.info("Migrated chat_binding: added agent_provider column")
+
+    async with db.execute("PRAGMA table_info(message_queue)") as cursor:
+        mq_columns = {row[1] for row in await cursor.fetchall()}
+    if "image_paths" not in mq_columns:
+        await db.execute(
+            "ALTER TABLE message_queue ADD COLUMN image_paths TEXT NOT NULL DEFAULT ''"
+        )
+        await db.commit()
+        logger.info("Migrated message_queue: added image_paths column")
+    if "disallowed_tools" not in mq_columns:
+        await db.execute(
+            "ALTER TABLE message_queue ADD COLUMN disallowed_tools TEXT NOT NULL DEFAULT ''"
+        )
+        await db.commit()
+        logger.info("Migrated message_queue: added disallowed_tools column")
 
 
 async def get_db() -> aiosqlite.Connection:
@@ -67,6 +113,7 @@ async def get_db() -> aiosqlite.Connection:
                 db_path = settings.db_file
                 _db = await aiosqlite.connect(str(db_path))
                 _db.row_factory = aiosqlite.Row
+                await _db.execute("PRAGMA journal_mode=WAL")
                 await _db.executescript(SCHEMA)
                 await _migrate(_db)
                 await _db.commit()
@@ -86,9 +133,11 @@ async def close_db() -> None:
 async def set_user_repo(user_id: str, repo_path: str) -> None:
     db = await get_db()
     now = datetime.now(UTC).isoformat()
+    provider = await get_user_agent_provider(user_id)
     await db.execute(
-        "INSERT OR REPLACE INTO user_context (user_id, repo_path, updated_at) VALUES (?, ?, ?)",
-        (user_id, repo_path, now),
+        "INSERT OR REPLACE INTO user_context (user_id, repo_path, agent_provider, updated_at)"
+        " VALUES (?, ?, ?, ?)",
+        (user_id, repo_path, provider, now),
     )
     await db.commit()
 
@@ -102,6 +151,31 @@ async def get_user_repo(user_id: str) -> str | None:
         return row["repo_path"] if row else None
 
 
+async def set_user_agent_provider(user_id: str, agent_provider: str) -> None:
+    db = await get_db()
+    now = datetime.now(UTC).isoformat()
+    repo_path = await get_user_repo(user_id)
+    repo_value = repo_path or ""
+    await db.execute(
+        "INSERT OR REPLACE INTO user_context (user_id, repo_path, agent_provider, updated_at)"
+        " VALUES (?, ?, ?, ?)",
+        (user_id, repo_value, agent_provider, now),
+    )
+    await db.commit()
+
+
+async def get_user_agent_provider(user_id: str) -> str:
+    db = await get_db()
+    async with db.execute(
+        "SELECT agent_provider FROM user_context WHERE user_id = ?", (user_id,)
+    ) as cursor:
+        row = await cursor.fetchone()
+        if not row:
+            return settings.normalized_agent_provider
+        provider = (row["agent_provider"] or "").strip().lower()
+        return provider if provider in {"claude", "codex"} else settings.normalized_agent_provider
+
+
 # --- chat_binding ---
 
 
@@ -112,6 +186,7 @@ class ChatBinding:
     repo_path: str
     branch_name: str
     user_id: str
+    agent_provider: str
     session_id: str | None
     permission_mode: str  # "auto" or "confirm"
     created_at: str
@@ -123,15 +198,25 @@ async def create_binding(
     repo_path: str,
     branch_name: str,
     user_id: str,
+    agent_provider: str | None = None,
 ) -> None:
     db = await get_db()
     now = datetime.now(UTC).isoformat()
     await db.execute(
         """INSERT INTO chat_binding
-           (chat_id, worktree_path, repo_path, branch_name, user_id, session_id,
+           (chat_id, worktree_path, repo_path, branch_name, user_id, agent_provider, session_id,
             permission_mode, created_at)
-           VALUES (?, ?, ?, ?, ?, NULL, ?, ?)""",
-        (chat_id, worktree_path, repo_path, branch_name, user_id, settings.permission_mode, now),
+           VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)""",
+        (
+            chat_id,
+            worktree_path,
+            repo_path,
+            branch_name,
+            user_id,
+            agent_provider or settings.normalized_agent_provider,
+            settings.permission_mode,
+            now,
+        ),
     )
     await db.commit()
 
@@ -178,15 +263,21 @@ class QueuedMessage:
     chat_id: str
     message_id: str
     text: str
+    image_paths: str  # comma-separated local file paths, empty string if none
+    disallowed_tools: str  # empty=use binding default, '[]'=explicitly allow all
     created_at: str
 
 
-async def enqueue_message(chat_id: str, message_id: str, text: str) -> None:
+async def enqueue_message(
+    chat_id: str, message_id: str, text: str, image_paths: str = "",
+    disallowed_tools: str = "",
+) -> None:
     db = await get_db()
     now = datetime.now(UTC).isoformat()
     await db.execute(
-        "INSERT INTO message_queue (chat_id, message_id, text, created_at) VALUES (?, ?, ?, ?)",
-        (chat_id, message_id, text, now),
+        "INSERT INTO message_queue (chat_id, message_id, text, image_paths, disallowed_tools, created_at)"
+        " VALUES (?, ?, ?, ?, ?, ?)",
+        (chat_id, message_id, text, image_paths, disallowed_tools, now),
     )
     await db.commit()
 
@@ -248,6 +339,60 @@ async def mark_message_seen(message_id: str) -> None:
         "INSERT OR IGNORE INTO seen_messages (message_id, created_at) VALUES (?, ?)",
         (message_id, now),
     )
+    await db.commit()
+
+
+async def save_active_cards(cards: dict[str, str]) -> None:
+    """Persist active streaming cards so they can be resumed after restart."""
+    db = await get_db()
+    await db.execute("DELETE FROM active_cards")
+    for chat_id, card_msg_id in cards.items():
+        await db.execute(
+            "INSERT INTO active_cards (chat_id, card_msg_id) VALUES (?, ?)",
+            (chat_id, card_msg_id),
+        )
+    await db.commit()
+
+
+async def load_and_clear_active_cards() -> dict[str, str]:
+    """Load active cards saved before last shutdown and clear the table."""
+    db = await get_db()
+    async with db.execute("SELECT chat_id, card_msg_id FROM active_cards") as cursor:
+        rows = await cursor.fetchall()
+    await db.execute("DELETE FROM active_cards")
+    await db.commit()
+    return {row["chat_id"]: row["card_msg_id"] for row in rows}
+
+
+# --- pending_plans ---
+
+
+async def save_pending_plan(chat_id: str, session_id: str | None, plan_text: str) -> None:
+    db = await get_db()
+    now = datetime.now(UTC).isoformat()
+    await db.execute(
+        "INSERT OR REPLACE INTO pending_plans (chat_id, session_id, plan_text, created_at)"
+        " VALUES (?, ?, ?, ?)",
+        (chat_id, session_id, plan_text, now),
+    )
+    await db.commit()
+
+
+async def get_pending_plan(chat_id: str) -> dict | None:
+    """Return {session_id, plan_text} or None."""
+    db = await get_db()
+    async with db.execute(
+        "SELECT session_id, plan_text FROM pending_plans WHERE chat_id = ?", (chat_id,)
+    ) as cursor:
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        return {"session_id": row["session_id"], "plan_text": row["plan_text"]}
+
+
+async def delete_pending_plan(chat_id: str) -> None:
+    db = await get_db()
+    await db.execute("DELETE FROM pending_plans WHERE chat_id = ?", (chat_id,))
     await db.commit()
 
 

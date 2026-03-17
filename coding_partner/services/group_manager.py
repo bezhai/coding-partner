@@ -11,6 +11,7 @@ from lark_oapi.api.im.v1 import (
     DeleteChatRequest,
 )
 
+from coding_partner.config import settings
 from coding_partner.feishu_client import get_client
 
 logger = logging.getLogger(__name__)
@@ -20,7 +21,7 @@ def create_dev_group(user_open_id: str, branch_name: str, repo_name: str) -> str
     """Create a dev group chat, add user, return chat_id."""
     client = get_client()
 
-    group_name = f"🔧 {repo_name} | {branch_name}"
+    group_name = f"{settings.normalized_group_name_prefix}🔧 {repo_name} | {branch_name}"
 
     body = (
         CreateChatRequestBody.builder()
